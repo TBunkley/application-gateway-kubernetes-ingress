@@ -3,6 +3,7 @@
 // Licensed under the MIT License. See License.txt in the project root for license information.
 // --------------------------------------------------------------------------------------------
 
+//go:build e2eingressclass
 // +build e2eingressclass
 
 package runner
@@ -73,6 +74,48 @@ var _ = Describe("networking-v1-IngressClass", func() {
 			// should return 200 as this ingress is using "custom-ingress-class"
 			_, err = makeGetRequest(url, "www.custom.com", 200, true)
 			Expect(err).To(BeNil(), "This should return 200 as this ingress is using 'custom-ingress-class'")
+		})
+
+		It("[ingress-class] redirect should work after AGIC pod is recreated", func() {
+			namespaceName := "e2e-ingress-class-redirect"
+			ns := &v1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespaceName,
+				},
+			}
+			klog.Info("Creating namespace: ", namespaceName)
+			_, err = clientset.CoreV1().Namespaces().Create(context.TODO(), ns, metav1.CreateOptions{})
+			Expect(err).To(BeNil())
+
+			SSLE2ERedirectYamlPath := "testdata/networking-v1/one-namespace-one-ingress/ssl-e2e-redirect/app.yaml"
+			klog.Info("Applying yaml: ", SSLE2ERedirectYamlPath)
+			err = applyYaml(clientset, namespaceName, SSLE2ERedirectYamlPath)
+			Expect(err).To(BeNil())
+
+			// get ip address for 1 ingress
+			klog.Info("Getting public IP from Ingress...")
+			publicIP, _ := getPublicIP(clientset, namespaceName)
+			Expect(publicIP).ToNot(Equal(""))
+
+			// delete AGIC pod
+			klog.Info("Deleting AGIC Pod")
+			deleteAGICPod(clientset)
+			time.Sleep(30 * time.Second)
+
+			// check that redirect still works
+			urlHttp := fmt.Sprintf("http://%s/index.html", publicIP)
+			urlHttps := fmt.Sprintf("https://%s/index.html", publicIP)
+
+			// http get to return 301
+			resp, err := makeGetRequest(urlHttp, "", 301, true)
+			Expect(err).To(BeNil())
+			redirectLocation := resp.Header.Get("Location")
+			klog.Infof("redirect location: %s", redirectLocation)
+			Expect(redirectLocation).To(Equal(urlHttps))
+
+			// https get to return 200 ok
+			_, err = makeGetRequest(urlHttps, "", 200, true)
+			Expect(err).To(BeNil())
 		})
 
 		AfterEach(func() {
